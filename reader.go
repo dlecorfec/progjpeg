@@ -5,12 +5,11 @@
 // Package jpeg implements a JPEG image decoder and encoder.
 //
 // JPEG is defined in ITU-T T.81: https://www.w3.org/Graphics/JPEG/itu-t81.pdf.
-package jpeg
+package progjpeg
 
 import (
 	"image"
 	"image/color"
-	"image/internal/imageutil"
 	"io"
 )
 
@@ -688,7 +687,7 @@ func (d *decoder) applyBlack() (image.Image, error) {
 		// above, so in practice, only the fourth channel (black) is inverted.
 		bounds := d.img3.Bounds()
 		img := image.NewRGBA(bounds)
-		imageutil.DrawYCbCr(img, bounds, d.img3, bounds.Min)
+		DrawYCbCr(img, bounds, d.img3, bounds.Min)
 		for iBase, y := 0, bounds.Min.Y; y < bounds.Max.Y; iBase, y = iBase+img.Stride, y+1 {
 			for i, x := iBase+3, bounds.Min.X; x < bounds.Max.X; i, x = i+4, x+1 {
 				img.Pix[i] = 255 - d.blackPix[(y-bounds.Min.Y)*d.blackStride+(x-bounds.Min.X)]

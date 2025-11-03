@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package jpeg
+package progjpeg
 
 import (
 	"bytes"
@@ -18,7 +18,7 @@ func FuzzDecode(f *testing.F) {
 		f.Skip("Skipping in short mode")
 	}
 
-	testdata, err := os.ReadDir("../testdata")
+	testdata, err := os.ReadDir("testdata")
 	if err != nil {
 		f.Fatalf("failed to read testdata directory: %s", err)
 	}
@@ -26,7 +26,7 @@ func FuzzDecode(f *testing.F) {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".jpeg") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join("../testdata", de.Name()))
+		b, err := os.ReadFile(filepath.Join("testdata", de.Name()))
 		if err != nil {
 			f.Fatalf("failed to read testdata: %s", err)
 		}
