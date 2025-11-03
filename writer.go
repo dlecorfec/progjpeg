@@ -312,9 +312,9 @@ func (e *encoder) writeDQT() {
 }
 
 // writeSOF0 writes the Start Of Frame (Baseline Sequential) marker.
-func (e *encoder) writeSOF0(size image.Point, nComponent int) {
+func (e *encoder) writeSOF(size image.Point, nComponent int, marker uint8) {
 	markerlen := 8 + 3*nComponent
-	e.writeMarkerHeader(sof0Marker, markerlen)
+	e.writeMarkerHeader(marker, markerlen)
 	e.buf[0] = 8 // 8-bit color.
 	e.buf[1] = uint8(size.Y >> 8)
 	e.buf[2] = uint8(size.Y & 0xff)
@@ -567,7 +567,8 @@ const DefaultQuality = 75
 // Options are the encoding parameters.
 // Quality ranges from 1 to 100 inclusive, higher is better.
 type Options struct {
-	Quality int
+	Quality     int
+	Progressive bool
 }
 
 // Encode writes the Image m to w in JPEG 4:2:0 baseline format with the given
@@ -626,16 +627,181 @@ func Encode(w io.Writer, m image.Image, o *Options) error {
 	e.write(e.buf[:2])
 	// Write the quantization tables.
 	e.writeDQT()
-	// Write the image dimensions.
-	e.writeSOF0(b.Size(), nComponent)
-	// Write the Huffman tables.
-	e.writeDHT(nComponent)
-	// Write the image data.
-	e.writeSOS(m)
+	if o != nil && o.Progressive {
+		e.writeProgressive(m, b, nComponent)
+	} else {
+		// Write the image dimensions.
+		e.writeSOF(b.Size(), nComponent, sof0Marker)
+		// Write the Huffman tables.
+		e.writeDHT(nComponent)
+		// Write the image data.
+		e.writeSOS(m)
+	}
 	// Write the End Of Image marker.
 	e.buf[0] = 0xff
 	e.buf[1] = 0xd9
 	e.write(e.buf[:2])
 	e.flush()
 	return e.err
+}
+
+func (e *encoder) writeProgressive(m image.Image, b image.Rectangle, nComponent int) {
+	// Write the image dimensions.
+	e.writeSOF(b.Size(), nComponent, sof2Marker)
+	// Write the Huffman tables.
+	e.writeDHT(nComponent)
+	// Write the image data with progressive scan script.
+	if nComponent == 3 {
+		// DC scan for all components - provides 1/8 size preview
+		e.writeProgressiveSOS(m, 0, 0, 0, 0, -1)
+		// Low frequency AC for Y (luminance) - most perceptually important
+		e.writeProgressiveSOS(m, 1, 5, 0, 0, 0)
+		// Low frequency AC for Cb and Cr (chrominance)
+		e.writeProgressiveSOS(m, 1, 5, 0, 0, 1)
+		e.writeProgressiveSOS(m, 1, 5, 0, 0, 2)
+		// High frequency AC for Y - completes luminance detail
+		e.writeProgressiveSOS(m, 6, 63, 0, 0, 0)
+		// High frequency AC for Cb and Cr - completes chrominance detail
+		e.writeProgressiveSOS(m, 6, 63, 0, 0, 1)
+		e.writeProgressiveSOS(m, 6, 63, 0, 0, 2)
+	} else {
+		// Grayscale progressive scan script
+		e.writeProgressiveSOS(m, 0, 0, 0, 0, 0)
+		e.writeProgressiveSOS(m, 1, 9, 0, 0, 0)
+		e.writeProgressiveSOS(m, 10, 63, 0, 0, 0)
+	}
+}
+
+var sosHeaderYCbCrShort = []byte{
+	0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02,
+	0x11, 0x03, 0x11,
+}
+
+func (e *encoder) writeProgressiveSOS(m image.Image, zigStart, zigEnd, ah, al, compID int) {
+	if compID != -1 {
+		var sosHeaderYShort = []byte{
+			0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00,
+		}
+		sosHeaderYShort[5] = byte(compID + 1)
+		if compID == 1 || compID == 2 {
+			sosHeaderYShort[6] = 0x11
+		} else {
+			sosHeaderYShort[6] = 0x00
+		}
+		e.write(sosHeaderYShort)
+	} else {
+		e.write(sosHeaderYCbCrShort)
+	}
+	refinement := byte(ah)<<4 + byte(al)&0x0F
+
+	progressiveScript := []byte{byte(zigStart), byte(zigEnd), refinement}
+	e.write(progressiveScript)
+	var (
+		// Scratch buffers to hold the YCbCr values.
+		// The blocks are in natural (not zig-zag) order.
+		b      block
+		cb, cr [4]block
+		// DC components are delta-encoded.
+		prevDCY, prevDCCb, prevDCCr int32
+	)
+	bounds := m.Bounds()
+	switch m := m.(type) {
+	case *image.Gray:
+		for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
+			for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
+				p := image.Pt(x, y)
+				grayToY(m, p, &b)
+				prevDCY = e.writePartialBlock(&b, 0, prevDCY, zigStart, zigEnd)
+			}
+		}
+	default:
+		rgba, _ := m.(*image.RGBA)
+		ycbcr, _ := m.(*image.YCbCr)
+		if compID != 0 {
+			for y := bounds.Min.Y; y < bounds.Max.Y; y += 16 {
+				for x := bounds.Min.X; x < bounds.Max.X; x += 16 {
+					for i := 0; i < 4; i++ {
+						xOff := (i & 1) * 8 // 0 8 0 8
+						yOff := (i & 2) * 4 // 0 0 8 8
+						p := image.Pt(x+xOff, y+yOff)
+						if rgba != nil {
+							rgbaToYCbCr(rgba, p, &b, &cb[i], &cr[i])
+						} else if ycbcr != nil {
+							yCbCrToYCbCr(ycbcr, p, &b, &cb[i], &cr[i])
+						} else {
+							toYCbCr(m, p, &b, &cb[i], &cr[i])
+						}
+						if compID == -1 {
+							prevDCY = e.writePartialBlock(&b, 0, prevDCY, zigStart, zigEnd)
+						}
+					}
+					if compID == -1 || compID == 1 {
+						scale(&b, &cb)
+						prevDCCb = e.writePartialBlock(&b, 1, prevDCCb, zigStart, zigEnd)
+					}
+					if compID == -1 || compID == 2 {
+						scale(&b, &cr)
+						prevDCCr = e.writePartialBlock(&b, 1, prevDCCr, zigStart, zigEnd)
+					}
+				}
+			}
+		} else { // Y only
+			for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
+				for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
+					p := image.Pt(x, y)
+					if rgba != nil {
+						rgbaToYCbCr(rgba, p, &b, &cb[0], &cr[0])
+					} else if ycbcr != nil {
+						yCbCrToYCbCr(ycbcr, p, &b, &cb[0], &cr[0])
+					} else {
+						toYCbCr(m, p, &b, &cb[0], &cr[0])
+					}
+					prevDCY = e.writePartialBlock(&b, 0, prevDCY, zigStart, zigEnd)
+				}
+			}
+		}
+	}
+	// Pad the last byte with 1's.
+	e.emit(0x7f, 7)
+	// Flush any remaining bits and reset the bit buffer for the next scan.
+	// In progressive mode, each scan must end with a byte-aligned boundary.
+	if e.nBits > 0 {
+		// Pad to byte boundary with 1's. We need to add (8 - nBits) more bits.
+		bitsNeeded := 8 - e.nBits
+		e.emit((1<<bitsNeeded)-1, bitsNeeded)
+	}
+	// Reset the bit buffer for the next scan
+	e.bits = 0
+	e.nBits = 0
+}
+
+func (e *encoder) writePartialBlock(b *block, q quantIndex, prevDC int32, ss, se int) int32 {
+	fdct(b)
+	if ss == 0 && se == 0 {
+		// Emit the DC delta.
+		dc := div(b[0], 8*int32(e.quant[q][0]))
+		e.emitHuffRLE(huffIndex(2*q+0), 0, dc-prevDC)
+		return dc
+	}
+	if ss > 0 {
+		// Emit the AC components.
+		h, runLength := huffIndex(2*q+1), int32(0)
+		for zig := ss; zig <= se; zig++ {
+			ac := div(b[unzig[zig]], 8*int32(e.quant[q][zig]))
+			if ac == 0 {
+				runLength++
+			} else {
+				for runLength > 15 {
+					e.emitHuff(h, 0xf0)
+					runLength -= 16
+				}
+				e.emitHuffRLE(h, runLength, ac)
+				runLength = 0
+			}
+		}
+		if runLength > 0 {
+			e.emitHuff(h, 0x00)
+		}
+	}
+	return 0
 }

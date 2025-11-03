@@ -99,16 +99,23 @@ func TestUnscaledQuant(t *testing.T) {
 }
 
 var testCase = []struct {
-	filename  string
-	quality   int
-	tolerance int64
+	filename    string
+	quality     int
+	tolerance   int64
+	progressive bool
 }{
-	{"testdata/video-001.png", 1, 24 << 8},
-	{"testdata/video-001.png", 20, 12 << 8},
-	{"testdata/video-001.png", 60, 8 << 8},
-	{"testdata/video-001.png", 80, 6 << 8},
-	{"testdata/video-001.png", 90, 4 << 8},
-	{"testdata/video-001.png", 100, 2 << 8},
+	{"testdata/video-001.png", 1, 24 << 8, false},
+	{"testdata/video-001.png", 20, 12 << 8, false},
+	{"testdata/video-001.png", 60, 8 << 8, false},
+	{"testdata/video-001.png", 80, 6 << 8, false},
+	{"testdata/video-001.png", 90, 4 << 8, false},
+	{"testdata/video-001.png", 100, 2 << 8, false},
+	{"testdata/video-001.png", 1, 24 << 8, true},
+	{"testdata/video-001.png", 20, 12 << 8, true},
+	{"testdata/video-001.png", 60, 8 << 8, true},
+	{"testdata/video-001.png", 80, 6 << 8, true},
+	{"testdata/video-001.png", 90, 4 << 8, true},
+	{"testdata/video-001.png", 100, 2 << 8, true},
 }
 
 func delta(u0, u1 uint32) int64 {
@@ -138,7 +145,7 @@ func TestWriter(t *testing.T) {
 		}
 		// Encode that image as JPEG.
 		var buf bytes.Buffer
-		err = Encode(&buf, m0, &Options{Quality: tc.quality})
+		err = Encode(&buf, m0, &Options{Quality: tc.quality, Progressive: tc.progressive})
 		if err != nil {
 			t.Error(tc.filename, err)
 			continue
