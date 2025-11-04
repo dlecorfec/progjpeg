@@ -7,6 +7,7 @@ package progjpeg
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -513,6 +514,21 @@ func (e *encoder) writeSOS(m image.Image) {
 	default:
 		e.write(sosHeaderYCbCr)
 	}
+
+	// Process all blocks using baseline encoding
+	e.processImageBlocks(m, -1, e.writeBlock)
+
+	// Pad the last byte with 1's.
+	e.emit(0x7f, 7)
+}
+
+// blockProcessor defines a function that processes a block of DCT coefficients.
+// It receives the block, quantization index, previous DC value, and returns the new DC value.
+type blockProcessor func(b *block, q quantIndex, prevDC int32) int32
+
+// processImageBlocks iterates over image blocks and calls the processor function for each block.
+// This function consolidates the common block iteration logic used by both baseline and progressive encoding.
+func (e *encoder) processImageBlocks(m image.Image, component int, processor blockProcessor) {
 	var (
 		// Scratch buffers to hold the YCbCr values.
 		// The blocks are in natural (not zig-zag) order.
@@ -522,53 +538,101 @@ func (e *encoder) writeSOS(m image.Image) {
 		prevDCY, prevDCCb, prevDCCr int32
 	)
 	bounds := m.Bounds()
+
 	switch m := m.(type) {
-	// TODO(wathiede): switch on m.ColorModel() instead of type.
 	case *image.Gray:
 		for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
 			for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
 				p := image.Pt(x, y)
 				grayToY(m, p, &b)
-				prevDCY = e.writeBlock(&b, 0, prevDCY)
+				prevDCY = processor(&b, 0, prevDCY)
 			}
 		}
 	default:
 		rgba, _ := m.(*image.RGBA)
 		ycbcr, _ := m.(*image.YCbCr)
-		for y := bounds.Min.Y; y < bounds.Max.Y; y += 16 {
-			for x := bounds.Min.X; x < bounds.Max.X; x += 16 {
-				for i := 0; i < 4; i++ {
-					xOff := (i & 1) * 8
-					yOff := (i & 2) * 4
-					p := image.Pt(x+xOff, y+yOff)
-					if rgba != nil {
-						rgbaToYCbCr(rgba, p, &b, &cb[i], &cr[i])
-					} else if ycbcr != nil {
-						yCbCrToYCbCr(ycbcr, p, &b, &cb[i], &cr[i])
-					} else {
-						toYCbCr(m, p, &b, &cb[i], &cr[i])
+
+		if component != 0 {
+			// Process color image with potential component filtering
+			for y := bounds.Min.Y; y < bounds.Max.Y; y += 16 {
+				for x := bounds.Min.X; x < bounds.Max.X; x += 16 {
+					for i := 0; i < 4; i++ {
+						xOff := (i & 1) * 8 // 0 8 0 8
+						yOff := (i & 2) * 4 // 0 0 8 8
+						p := image.Pt(x+xOff, y+yOff)
+						if rgba != nil {
+							rgbaToYCbCr(rgba, p, &b, &cb[i], &cr[i])
+						} else if ycbcr != nil {
+							yCbCrToYCbCr(ycbcr, p, &b, &cb[i], &cr[i])
+						} else {
+							toYCbCr(m, p, &b, &cb[i], &cr[i])
+						}
+						if component == -1 || component == 0 {
+							prevDCY = processor(&b, 0, prevDCY)
+						}
 					}
-					prevDCY = e.writeBlock(&b, 0, prevDCY)
+					if component == -1 || component == 1 {
+						scale(&b, &cb)
+						prevDCCb = processor(&b, 1, prevDCCb)
+					}
+					if component == -1 || component == 2 {
+						scale(&b, &cr)
+						prevDCCr = processor(&b, 1, prevDCCr)
+					}
 				}
-				scale(&b, &cb)
-				prevDCCb = e.writeBlock(&b, 1, prevDCCb)
-				scale(&b, &cr)
-				prevDCCr = e.writeBlock(&b, 1, prevDCCr)
+			}
+		} else {
+			// Y component only processing
+			for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
+				for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
+					p := image.Pt(x, y)
+					if rgba != nil {
+						rgbaToYCbCr(rgba, p, &b, &cb[0], &cr[0])
+					} else if ycbcr != nil {
+						yCbCrToYCbCr(ycbcr, p, &b, &cb[0], &cr[0])
+					} else {
+						toYCbCr(m, p, &b, &cb[0], &cr[0])
+					}
+					prevDCY = processor(&b, 0, prevDCY)
+				}
 			}
 		}
 	}
-	// Pad the last byte with 1's.
-	e.emit(0x7f, 7)
 }
 
 // DefaultQuality is the default quality encoding parameter.
 const DefaultQuality = 75
+
+// ProgressiveScan represents a single scan in a progressive JPEG sequence.
+// Each scan encodes a specific subset of the DCT coefficients.
+type ProgressiveScan struct {
+	// Component specifies which color component to encode:
+	// -1 = all components (DC scan), 0 = Y (luminance), 1 = Cb, 2 = Cr
+	Component int
+
+	// SpectralStart and SpectralEnd define the range of DCT coefficients (0-63)
+	// 0,0 = DC only, 1,5 = low frequency AC, 6,63 = high frequency AC
+	SpectralStart, SpectralEnd int
+
+	// SuccessiveApproxHigh and SuccessiveApproxLow control bit-plane refinement
+	// For spectral selection only: both should be 0
+	// For successive approximation: ah=starting bit position, al=ending bit position
+	SuccessiveApproxHigh, SuccessiveApproxLow int
+}
+
+// ScanScript defines a complete progressive scan sequence.
+type ScanScript []ProgressiveScan
 
 // Options are the encoding parameters.
 // Quality ranges from 1 to 100 inclusive, higher is better.
 type Options struct {
 	Quality     int
 	Progressive bool
+
+	// ScanScript defines a custom progressive scan sequence.
+	// If nil, default scan scripts are used based on the image type.
+	// Only used when Progressive is true.
+	ScanScript ScanScript
 }
 
 // Encode writes the Image m to w in JPEG 4:2:0 baseline format with the given
@@ -628,7 +692,7 @@ func Encode(w io.Writer, m image.Image, o *Options) error {
 	// Write the quantization tables.
 	e.writeDQT()
 	if o != nil && o.Progressive {
-		e.writeProgressive(m, b, nComponent)
+		e.writeProgressive(m, b, nComponent, o)
 	} else {
 		// Write the image dimensions.
 		e.writeSOF(b.Size(), nComponent, sof0Marker)
@@ -645,122 +709,162 @@ func Encode(w io.Writer, m image.Image, o *Options) error {
 	return e.err
 }
 
-func (e *encoder) writeProgressive(m image.Image, b image.Rectangle, nComponent int) {
+// DefaultGrayscaleScanScript returns the default progressive scan script for grayscale images.
+func DefaultGrayscaleScanScript() ScanScript {
+	return ScanScript{
+		// DC scan
+		{Component: 0, SpectralStart: 0, SpectralEnd: 0},
+		// Low frequency AC
+		{Component: 0, SpectralStart: 1, SpectralEnd: 9},
+		// High frequency AC
+		{Component: 0, SpectralStart: 10, SpectralEnd: 63},
+	}
+}
+
+// DefaultColorScanScript returns the default progressive scan script optimized for fast initial display.
+// This puts more emphasis on getting a viewable image quickly and is used as the default
+// for color images when no custom scan script is specified.
+func DefaultColorScanScript() ScanScript {
+	return ScanScript{
+		// DC scan for all components
+		{Component: -1, SpectralStart: 0, SpectralEnd: 0},
+		// Very low frequency AC for Y only - fastest recognizable image
+		{Component: 0, SpectralStart: 1, SpectralEnd: 2},
+		// Slightly more Y detail
+		{Component: 0, SpectralStart: 3, SpectralEnd: 9},
+		// Add color information
+		{Component: 1, SpectralStart: 1, SpectralEnd: 5},
+		{Component: 2, SpectralStart: 1, SpectralEnd: 5},
+		// Complete the image
+		{Component: 0, SpectralStart: 10, SpectralEnd: 63},
+		{Component: 1, SpectralStart: 6, SpectralEnd: 63},
+		{Component: 2, SpectralStart: 6, SpectralEnd: 63},
+	}
+}
+
+// validateScanScript checks if a scan script is valid for JPEG encoding.
+func validateScanScript(script ScanScript, nComponent int) error {
+	if len(script) == 0 {
+		return errors.New("jpeg: scan script cannot be empty")
+	}
+
+	for i, scan := range script {
+		// Validate component
+		if scan.Component < -1 || scan.Component >= nComponent {
+			return fmt.Errorf("jpeg: scan %d has invalid component %d (must be -1 to %d)", i, scan.Component, nComponent-1)
+		}
+
+		// Validate spectral selection
+		if scan.SpectralStart < 0 || scan.SpectralStart > 63 {
+			return fmt.Errorf("jpeg: scan %d has invalid spectral start %d (must be 0-63)", i, scan.SpectralStart)
+		}
+		if scan.SpectralEnd < scan.SpectralStart || scan.SpectralEnd > 63 {
+			return fmt.Errorf("jpeg: scan %d has invalid spectral end %d (must be %d-63)", i, scan.SpectralEnd, scan.SpectralStart)
+		}
+
+		// Validate successive approximation
+		if scan.SuccessiveApproxHigh < 0 || scan.SuccessiveApproxHigh > 13 {
+			return fmt.Errorf("jpeg: scan %d has invalid successive approximation high %d (must be 0-13)", i, scan.SuccessiveApproxHigh)
+		}
+		if scan.SuccessiveApproxLow < 0 || scan.SuccessiveApproxLow > 13 {
+			return fmt.Errorf("jpeg: scan %d has invalid successive approximation low %d (must be 0-13)", i, scan.SuccessiveApproxLow)
+		}
+		if scan.SuccessiveApproxLow > scan.SuccessiveApproxHigh {
+			return fmt.Errorf("jpeg: scan %d has successive approximation low > high (%d > %d)", i, scan.SuccessiveApproxLow, scan.SuccessiveApproxHigh)
+		}
+
+		// Validate DC scan constraints
+		if scan.SpectralStart == 0 && scan.SpectralEnd == 0 {
+			// DC scan - component -1 is allowed for interleaved DC
+			if scan.Component != -1 && scan.Component >= nComponent {
+				return fmt.Errorf("jpeg: DC scan %d has invalid component %d", i, scan.Component)
+			}
+		} else {
+			// AC scan - component -1 is not allowed
+			if scan.Component == -1 {
+				return fmt.Errorf("jpeg: AC scan %d cannot have component -1 (interleaved AC not allowed)", i)
+			}
+		}
+	}
+
+	return nil
+}
+
+// writeProgressive encodes the image using progressive JPEG format.
+// Progressive JPEG allows the image to be displayed incrementally as it loads.
+func (e *encoder) writeProgressive(m image.Image, b image.Rectangle, nComponent int, o *Options) {
 	// Write the image dimensions.
 	e.writeSOF(b.Size(), nComponent, sof2Marker)
 	// Write the Huffman tables.
 	e.writeDHT(nComponent)
-	// Write the image data with progressive scan script.
-	if nComponent == 3 {
-		// DC scan for all components - provides 1/8 size preview
-		e.writeProgressiveSOS(m, 0, 0, 0, 0, -1)
-		// Low frequency AC for Y (luminance) - most perceptually important
-		e.writeProgressiveSOS(m, 1, 5, 0, 0, 0)
-		// Low frequency AC for Cb and Cr (chrominance)
-		e.writeProgressiveSOS(m, 1, 5, 0, 0, 1)
-		e.writeProgressiveSOS(m, 1, 5, 0, 0, 2)
-		// High frequency AC for Y - completes luminance detail
-		e.writeProgressiveSOS(m, 6, 63, 0, 0, 0)
-		// High frequency AC for Cb and Cr - completes chrominance detail
-		e.writeProgressiveSOS(m, 6, 63, 0, 0, 1)
-		e.writeProgressiveSOS(m, 6, 63, 0, 0, 2)
+
+	// Determine which scan script to use
+	var script ScanScript
+	if o != nil && o.ScanScript != nil {
+		script = o.ScanScript
 	} else {
-		// Grayscale progressive scan script
-		e.writeProgressiveSOS(m, 0, 0, 0, 0, 0)
-		e.writeProgressiveSOS(m, 1, 9, 0, 0, 0)
-		e.writeProgressiveSOS(m, 10, 63, 0, 0, 0)
+		// Use default scan script based on image type
+		if nComponent == 3 {
+			script = DefaultColorScanScript()
+		} else {
+			script = DefaultGrayscaleScanScript()
+		}
+	}
+
+	// Validate the scan script
+	if err := validateScanScript(script, nComponent); err != nil {
+		// If validation fails, fall back to default script
+		if nComponent == 3 {
+			script = DefaultColorScanScript()
+		} else {
+			script = DefaultGrayscaleScanScript()
+		}
+	}
+
+	// Execute the scan script
+	for _, scan := range script {
+		e.writeProgressiveSOS(m, scan.SpectralStart, scan.SpectralEnd,
+			scan.SuccessiveApproxHigh, scan.SuccessiveApproxLow, scan.Component)
 	}
 }
 
-var sosHeaderYCbCrShort = []byte{
-	0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02,
-	0x11, 0x03, 0x11,
-}
-
-func (e *encoder) writeProgressiveSOS(m image.Image, zigStart, zigEnd, ah, al, compID int) {
-	if compID != -1 {
+// writeProgressiveSOS writes a Start Of Scan marker for a progressive scan
+// and processes the image blocks for that scan.
+// zigStart and zigEnd define the range of DCT coefficients to encode.
+// ah and al define the successive approximation bit positions (currently supports only 0).
+// component specifies which color component to encode (-1 for all components).
+func (e *encoder) writeProgressiveSOS(m image.Image, zigStart, zigEnd, ah, al, component int) {
+	if component != -1 {
 		var sosHeaderYShort = []byte{
 			0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00,
 		}
-		sosHeaderYShort[5] = byte(compID + 1)
-		if compID == 1 || compID == 2 {
+		sosHeaderYShort[5] = byte(component + 1)
+		if component == 1 || component == 2 {
 			sosHeaderYShort[6] = 0x11
 		} else {
 			sosHeaderYShort[6] = 0x00
 		}
 		e.write(sosHeaderYShort)
 	} else {
+		var sosHeaderYCbCrShort = []byte{
+			0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02,
+			0x11, 0x03, 0x11,
+		}
 		e.write(sosHeaderYCbCrShort)
 	}
-	refinement := byte(ah)<<4 + byte(al)&0x0F
+	refinement := (byte(ah) << 4) | (byte(al) & 0x0F)
 
 	progressiveScript := []byte{byte(zigStart), byte(zigEnd), refinement}
 	e.write(progressiveScript)
-	var (
-		// Scratch buffers to hold the YCbCr values.
-		// The blocks are in natural (not zig-zag) order.
-		b      block
-		cb, cr [4]block
-		// DC components are delta-encoded.
-		prevDCY, prevDCCb, prevDCCr int32
-	)
-	bounds := m.Bounds()
-	switch m := m.(type) {
-	case *image.Gray:
-		for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
-			for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
-				p := image.Pt(x, y)
-				grayToY(m, p, &b)
-				prevDCY = e.writePartialBlock(&b, 0, prevDCY, zigStart, zigEnd)
-			}
-		}
-	default:
-		rgba, _ := m.(*image.RGBA)
-		ycbcr, _ := m.(*image.YCbCr)
-		if compID != 0 {
-			for y := bounds.Min.Y; y < bounds.Max.Y; y += 16 {
-				for x := bounds.Min.X; x < bounds.Max.X; x += 16 {
-					for i := 0; i < 4; i++ {
-						xOff := (i & 1) * 8 // 0 8 0 8
-						yOff := (i & 2) * 4 // 0 0 8 8
-						p := image.Pt(x+xOff, y+yOff)
-						if rgba != nil {
-							rgbaToYCbCr(rgba, p, &b, &cb[i], &cr[i])
-						} else if ycbcr != nil {
-							yCbCrToYCbCr(ycbcr, p, &b, &cb[i], &cr[i])
-						} else {
-							toYCbCr(m, p, &b, &cb[i], &cr[i])
-						}
-						if compID == -1 {
-							prevDCY = e.writePartialBlock(&b, 0, prevDCY, zigStart, zigEnd)
-						}
-					}
-					if compID == -1 || compID == 1 {
-						scale(&b, &cb)
-						prevDCCb = e.writePartialBlock(&b, 1, prevDCCb, zigStart, zigEnd)
-					}
-					if compID == -1 || compID == 2 {
-						scale(&b, &cr)
-						prevDCCr = e.writePartialBlock(&b, 1, prevDCCr, zigStart, zigEnd)
-					}
-				}
-			}
-		} else { // Y only
-			for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
-				for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
-					p := image.Pt(x, y)
-					if rgba != nil {
-						rgbaToYCbCr(rgba, p, &b, &cb[0], &cr[0])
-					} else if ycbcr != nil {
-						yCbCrToYCbCr(ycbcr, p, &b, &cb[0], &cr[0])
-					} else {
-						toYCbCr(m, p, &b, &cb[0], &cr[0])
-					}
-					prevDCY = e.writePartialBlock(&b, 0, prevDCY, zigStart, zigEnd)
-				}
-			}
-		}
+
+	// Create a closure that captures the zigzag range for progressive encoding
+	processor := func(b *block, q quantIndex, prevDC int32) int32 {
+		return e.writePartialBlock(b, q, prevDC, zigStart, zigEnd)
 	}
+
+	// Process blocks using the shared logic
+	e.processImageBlocks(m, component, processor)
+
 	// Pad the last byte with 1's.
 	e.emit(0x7f, 7)
 	// Flush any remaining bits and reset the bit buffer for the next scan.
@@ -775,6 +879,10 @@ func (e *encoder) writeProgressiveSOS(m image.Image, zigStart, zigEnd, ah, al, c
 	e.nBits = 0
 }
 
+// writePartialBlock writes a block of pixel data for a progressive scan,
+// processing only the specified range of DCT coefficients (from ss to se).
+// It returns the post-quantized DC value of the DCT-transformed block.
+// b is in natural (not zig-zag) order.
 func (e *encoder) writePartialBlock(b *block, q quantIndex, prevDC int32, ss, se int) int32 {
 	fdct(b)
 	if ss == 0 && se == 0 {
