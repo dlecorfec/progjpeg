@@ -80,9 +80,11 @@ func (d *decoder) receiveExtend(t uint8) (int32, error) {
 	d.bits.m >>= t
 	s := int32(1) << t
 	x := int32(d.bits.a>>uint8(d.bits.n)) & (s - 1)
-	if x < s>>1 {
-		x += ((-1) << t) + 1
-	}
+	// Branchless sign extension: check the sign bit and extend if needed.
+	// If the top bit (in the t-bit value) is 0, we need to subtract (add negative offset).
+	// sign is 0 if top bit is set, -1 if top bit is clear.
+	sign := (x >> (t - 1)) - 1
+	x += sign & (((-1) << t) + 1)
 	return x, nil
 }
 
