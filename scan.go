@@ -465,9 +465,80 @@ func (d *decoder) reconstructProgressiveImage() error {
 // to the image.
 func (d *decoder) reconstructBlock(b *block, bx, by, compIndex int) error {
 	qt := &d.quant[d.comp[compIndex].tq]
-	for zig := 0; zig < blockSize; zig++ {
-		b[unzig[zig]] *= qt[zig]
-	}
+	
+	// Unroll dequantization loop - process in natural order for better cache locality
+	b[0] *= qt[0]   // DC coefficient
+	b[1] *= qt[1]   
+	b[2] *= qt[5]   
+	b[3] *= qt[6]   
+	b[4] *= qt[14]  
+	b[5] *= qt[15]  
+	b[6] *= qt[27]  
+	b[7] *= qt[28]  
+	
+	b[8] *= qt[2]   
+	b[9] *= qt[4]   
+	b[10] *= qt[7]  
+	b[11] *= qt[13] 
+	b[12] *= qt[16] 
+	b[13] *= qt[26] 
+	b[14] *= qt[29] 
+	b[15] *= qt[42] 
+	
+	b[16] *= qt[3]  
+	b[17] *= qt[8]  
+	b[18] *= qt[12] 
+	b[19] *= qt[17] 
+	b[20] *= qt[25] 
+	b[21] *= qt[30] 
+	b[22] *= qt[41] 
+	b[23] *= qt[43] 
+	
+	b[24] *= qt[9]  
+	b[25] *= qt[11] 
+	b[26] *= qt[18] 
+	b[27] *= qt[24] 
+	b[28] *= qt[31] 
+	b[29] *= qt[40] 
+	b[30] *= qt[44] 
+	b[31] *= qt[53] 
+	
+	b[32] *= qt[10] 
+	b[33] *= qt[19] 
+	b[34] *= qt[23] 
+	b[35] *= qt[32] 
+	b[36] *= qt[39] 
+	b[37] *= qt[45] 
+	b[38] *= qt[52] 
+	b[39] *= qt[54] 
+	
+	b[40] *= qt[20] 
+	b[41] *= qt[22] 
+	b[42] *= qt[33] 
+	b[43] *= qt[38] 
+	b[44] *= qt[46] 
+	b[45] *= qt[51] 
+	b[46] *= qt[55] 
+	b[47] *= qt[60] 
+	
+	b[48] *= qt[21] 
+	b[49] *= qt[34] 
+	b[50] *= qt[37] 
+	b[51] *= qt[47] 
+	b[52] *= qt[50] 
+	b[53] *= qt[56] 
+	b[54] *= qt[59] 
+	b[55] *= qt[61] 
+	
+	b[56] *= qt[35] 
+	b[57] *= qt[36] 
+	b[58] *= qt[48] 
+	b[59] *= qt[49] 
+	b[60] *= qt[57] 
+	b[61] *= qt[58] 
+	b[62] *= qt[62] 
+	b[63] *= qt[63] 
+	
 	idct(b)
 	dst, stride := []byte(nil), 0
 	if d.nComp == 1 {
