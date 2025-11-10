@@ -273,6 +273,29 @@ func BenchmarkEncodeRGBA(b *testing.B) {
 	}
 }
 
+func BenchmarkEncodeRGBAProgressive(b *testing.B) {
+	img := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	bo := img.Bounds()
+	rnd := rand.New(rand.NewSource(123))
+	for y := bo.Min.Y; y < bo.Max.Y; y++ {
+		for x := bo.Min.X; x < bo.Max.X; x++ {
+			img.SetRGBA(x, y, color.RGBA{
+				uint8(rnd.Intn(256)),
+				uint8(rnd.Intn(256)),
+				uint8(rnd.Intn(256)),
+				255,
+			})
+		}
+	}
+	b.SetBytes(640 * 480 * 4)
+	b.ReportAllocs()
+	b.ResetTimer()
+	options := &Options{Quality: 90, Progressive: true}
+	for i := 0; i < b.N; i++ {
+		Encode(io.Discard, img, options)
+	}
+}
+
 func BenchmarkEncodeYCbCr(b *testing.B) {
 	img := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
 	bo := img.Bounds()
@@ -290,6 +313,28 @@ func BenchmarkEncodeYCbCr(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	options := &Options{Quality: 90}
+	for i := 0; i < b.N; i++ {
+		Encode(io.Discard, img, options)
+	}
+}
+
+func BenchmarkEncodeYCbCrProgressive(b *testing.B) {
+	img := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
+	bo := img.Bounds()
+	rnd := rand.New(rand.NewSource(123))
+	for y := bo.Min.Y; y < bo.Max.Y; y++ {
+		for x := bo.Min.X; x < bo.Max.X; x++ {
+			cy := img.YOffset(x, y)
+			ci := img.COffset(x, y)
+			img.Y[cy] = uint8(rnd.Intn(256))
+			img.Cb[ci] = uint8(rnd.Intn(256))
+			img.Cr[ci] = uint8(rnd.Intn(256))
+		}
+	}
+	b.SetBytes(640 * 480 * 3)
+	b.ReportAllocs()
+	b.ResetTimer()
+	options := &Options{Quality: 90, Progressive: true}
 	for i := 0; i < b.N; i++ {
 		Encode(io.Discard, img, options)
 	}
