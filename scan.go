@@ -465,80 +465,9 @@ func (d *decoder) reconstructProgressiveImage() error {
 // to the image.
 func (d *decoder) reconstructBlock(b *block, bx, by, compIndex int) error {
 	qt := &d.quant[d.comp[compIndex].tq]
-	
-	// Unroll dequantization loop - process in natural order for better cache locality
-	b[0] *= qt[0]   // DC coefficient
-	b[1] *= qt[1]   
-	b[2] *= qt[5]   
-	b[3] *= qt[6]   
-	b[4] *= qt[14]  
-	b[5] *= qt[15]  
-	b[6] *= qt[27]  
-	b[7] *= qt[28]  
-	
-	b[8] *= qt[2]   
-	b[9] *= qt[4]   
-	b[10] *= qt[7]  
-	b[11] *= qt[13] 
-	b[12] *= qt[16] 
-	b[13] *= qt[26] 
-	b[14] *= qt[29] 
-	b[15] *= qt[42] 
-	
-	b[16] *= qt[3]  
-	b[17] *= qt[8]  
-	b[18] *= qt[12] 
-	b[19] *= qt[17] 
-	b[20] *= qt[25] 
-	b[21] *= qt[30] 
-	b[22] *= qt[41] 
-	b[23] *= qt[43] 
-	
-	b[24] *= qt[9]  
-	b[25] *= qt[11] 
-	b[26] *= qt[18] 
-	b[27] *= qt[24] 
-	b[28] *= qt[31] 
-	b[29] *= qt[40] 
-	b[30] *= qt[44] 
-	b[31] *= qt[53] 
-	
-	b[32] *= qt[10] 
-	b[33] *= qt[19] 
-	b[34] *= qt[23] 
-	b[35] *= qt[32] 
-	b[36] *= qt[39] 
-	b[37] *= qt[45] 
-	b[38] *= qt[52] 
-	b[39] *= qt[54] 
-	
-	b[40] *= qt[20] 
-	b[41] *= qt[22] 
-	b[42] *= qt[33] 
-	b[43] *= qt[38] 
-	b[44] *= qt[46] 
-	b[45] *= qt[51] 
-	b[46] *= qt[55] 
-	b[47] *= qt[60] 
-	
-	b[48] *= qt[21] 
-	b[49] *= qt[34] 
-	b[50] *= qt[37] 
-	b[51] *= qt[47] 
-	b[52] *= qt[50] 
-	b[53] *= qt[56] 
-	b[54] *= qt[59] 
-	b[55] *= qt[61] 
-	
-	b[56] *= qt[35] 
-	b[57] *= qt[36] 
-	b[58] *= qt[48] 
-	b[59] *= qt[49] 
-	b[60] *= qt[57] 
-	b[61] *= qt[58] 
-	b[62] *= qt[62] 
-	b[63] *= qt[63] 
-	
+	for zig := 0; zig < blockSize; zig++ {
+		b[unzig[zig]] *= qt[zig]
+	}
 	idct(b)
 	dst, stride := []byte(nil), 0
 	if d.nComp == 1 {
@@ -557,107 +486,23 @@ func (d *decoder) reconstructBlock(b *block, bx, by, compIndex int) error {
 			return UnsupportedError("too many components")
 		}
 	}
-	// Unroll pixel writing loops - process each row for better cache locality
-	
-	// Row 0
-	dst[0] = clampToUint8(b[0])
-	dst[1] = clampToUint8(b[1])
-	dst[2] = clampToUint8(b[2])
-	dst[3] = clampToUint8(b[3])
-	dst[4] = clampToUint8(b[4])
-	dst[5] = clampToUint8(b[5])
-	dst[6] = clampToUint8(b[6])
-	dst[7] = clampToUint8(b[7])
-	
-	// Row 1
-	dst[stride] = clampToUint8(b[8])
-	dst[stride+1] = clampToUint8(b[9])
-	dst[stride+2] = clampToUint8(b[10])
-	dst[stride+3] = clampToUint8(b[11])
-	dst[stride+4] = clampToUint8(b[12])
-	dst[stride+5] = clampToUint8(b[13])
-	dst[stride+6] = clampToUint8(b[14])
-	dst[stride+7] = clampToUint8(b[15])
-	
-	// Row 2
-	stride2 := 2 * stride
-	dst[stride2] = clampToUint8(b[16])
-	dst[stride2+1] = clampToUint8(b[17])
-	dst[stride2+2] = clampToUint8(b[18])
-	dst[stride2+3] = clampToUint8(b[19])
-	dst[stride2+4] = clampToUint8(b[20])
-	dst[stride2+5] = clampToUint8(b[21])
-	dst[stride2+6] = clampToUint8(b[22])
-	dst[stride2+7] = clampToUint8(b[23])
-	
-	// Row 3
-	stride3 := 3 * stride
-	dst[stride3] = clampToUint8(b[24])
-	dst[stride3+1] = clampToUint8(b[25])
-	dst[stride3+2] = clampToUint8(b[26])
-	dst[stride3+3] = clampToUint8(b[27])
-	dst[stride3+4] = clampToUint8(b[28])
-	dst[stride3+5] = clampToUint8(b[29])
-	dst[stride3+6] = clampToUint8(b[30])
-	dst[stride3+7] = clampToUint8(b[31])
-	
-	// Row 4
-	stride4 := 4 * stride
-	dst[stride4] = clampToUint8(b[32])
-	dst[stride4+1] = clampToUint8(b[33])
-	dst[stride4+2] = clampToUint8(b[34])
-	dst[stride4+3] = clampToUint8(b[35])
-	dst[stride4+4] = clampToUint8(b[36])
-	dst[stride4+5] = clampToUint8(b[37])
-	dst[stride4+6] = clampToUint8(b[38])
-	dst[stride4+7] = clampToUint8(b[39])
-	
-	// Row 5
-	stride5 := 5 * stride
-	dst[stride5] = clampToUint8(b[40])
-	dst[stride5+1] = clampToUint8(b[41])
-	dst[stride5+2] = clampToUint8(b[42])
-	dst[stride5+3] = clampToUint8(b[43])
-	dst[stride5+4] = clampToUint8(b[44])
-	dst[stride5+5] = clampToUint8(b[45])
-	dst[stride5+6] = clampToUint8(b[46])
-	dst[stride5+7] = clampToUint8(b[47])
-	
-	// Row 6
-	stride6 := 6 * stride
-	dst[stride6] = clampToUint8(b[48])
-	dst[stride6+1] = clampToUint8(b[49])
-	dst[stride6+2] = clampToUint8(b[50])
-	dst[stride6+3] = clampToUint8(b[51])
-	dst[stride6+4] = clampToUint8(b[52])
-	dst[stride6+5] = clampToUint8(b[53])
-	dst[stride6+6] = clampToUint8(b[54])
-	dst[stride6+7] = clampToUint8(b[55])
-	
-	// Row 7
-	stride7 := 7 * stride
-	dst[stride7] = clampToUint8(b[56])
-	dst[stride7+1] = clampToUint8(b[57])
-	dst[stride7+2] = clampToUint8(b[58])
-	dst[stride7+3] = clampToUint8(b[59])
-	dst[stride7+4] = clampToUint8(b[60])
-	dst[stride7+5] = clampToUint8(b[61])
-	dst[stride7+6] = clampToUint8(b[62])
-	dst[stride7+7] = clampToUint8(b[63])
-	
+	// Level shift by +128, clip to [0, 255], and write to dst.
+	for y := 0; y < 8; y++ {
+		y8 := y * 8
+		yStride := y * stride
+		for x := 0; x < 8; x++ {
+			c := b[y8+x]
+			if c < -128 {
+				c = 0
+			} else if c > 127 {
+				c = 255
+			} else {
+				c += 128
+			}
+			dst[yStride+x] = uint8(c)
+		}
+	}
 	return nil
-}
-
-// clampToUint8 performs level shift by +128 and clamps to [0, 255]
-func clampToUint8(c int32) uint8 {
-	c += 128
-	if c < 0 {
-		return 0
-	}
-	if c > 255 {
-		return 255
-	}
-	return uint8(c)
 }
 
 // findRST advances past the next RST restart marker that matches expectedRST.
